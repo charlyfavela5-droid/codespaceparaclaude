@@ -1,0 +1,4 @@
+# Nunca subir logins/tokens de Claude
+.claude-cuentas/
+.credentials.json
+.claude/settings.local.json

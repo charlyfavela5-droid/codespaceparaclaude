@@ -1,0 +1,6 @@
+{
+  "name": "codespaceparaclaude",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "postCreateCommand": "npm install -g @anthropic-ai/claude-code && pip install modal && bash scripts/instalar-cuentas.sh",
+  "forwardPorts": [3000, 8000, 8080]
+}
