@@ -495,15 +495,19 @@ APP_URL = "amy-vip-taxi-9ts5.onrender.com"  # el de los anuncios que Amy ya apro
 ANUNCIOS = {"amy-vip": {
     "negocio": "Amy VIP Taxis · Nogales, Sonora (taxis con app propia para pedir)",
     "base": "/med/amy/flotilla.jpg",
-    "datos": ("16 choferes hoy; promoción aprobada «Tu 8.º servicio es gratis»; la app tiene botón de emergencia, compartir viaje y estados "
-              "activo/ocupado/descanso. No hay precios, tiempos de llegada, horario, número de WhatsApp ni foto de la dueña confirmados."),
-    "piezas": [
-        {"titulo": "Anuncio nuevo · pasajeros: viaja seguro", "lineas": ["Viaja seguro", "en Nogales"],
-         "checks": ["Botón de emergencia en la app", "Comparte tu viaje en vivo", "Tu 8.º servicio es GRATIS"],
-         "cta": "Pide tu taxi desde el celular", "cta2": APP_URL},
+    "datos": ("16 choferes hoy; promoción aprobada «Tu 8.º servicio es gratis»; WhatsApp oficial 6313020074 (lo mandó Amy el 12 nov); "
+              "la app tiene botón de emergencia, compartir viaje y estados activo/ocupado/descanso. Amy quiere más mensajes y llamadas, rápido. "
+              "No hay precios, tiempos de llegada, horario ni foto de la dueña confirmados."),
+    "piezas": [  # 13 nov (2.a vuelta con los arreglos de Glimmer): seguridad primero, un solo CTA con el número
+        {"titulo": "Anuncio nuevo · pasajeros: pide por WhatsApp", "lineas": ["Pide tu taxi", "por WhatsApp"],
+         "checks": ["Botón de emergencia en la app", "Tu 8.º viaje es GRATIS", "Comparte tu viaje en vivo"],
+         "cta": "Escribe o llama: 631 302 0074", "cta2": "Amy VIP Taxis · Nogales"},
+        {"titulo": "Anuncio nuevo · pasajeros: viaja seguro", "lineas": ["Pide tu taxi por", "WhatsApp en Nogales"],
+         "checks": ["Viaja seguro: botón de emergencia", "Tu 8.º viaje es GRATIS", "Comparte tu viaje en vivo"],
+         "cta": "Escribe o llama: 631 302 0074", "cta2": "Amy VIP Taxis · Nogales"},
         {"titulo": "Anuncio nuevo · choferes: únete", "lineas": ["¿Eres chofer", "en Nogales?"],
          "checks": ["Recibe pedidos en tu celular", "Tú eliges: activo, ocupado o descanso", "Únete a una flotilla de 16 choferes"],
-         "cta": "Escríbenos y únete a Amy VIP Taxis", "cta2": "Te contamos los requisitos por mensaje"},
+         "cta": "Escríbenos para unirte: 631 302 0074", "cta2": "Te contamos los requisitos por WhatsApp"},
     ]}}
 IMG_PROD = modal.Image.debian_slim(python_version="3.12").apt_install("fonts-dejavu-core").pip_install("pillow")
 

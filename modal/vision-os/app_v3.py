@@ -979,6 +979,7 @@ fable_image = (
     .pip_install("httpx")
 )
 FABLE_MODEL = "claude-fable-5-2"
+OPUS_MODEL = "claude-opus-5-5"  # respaldo cuando Fable llega a su tope diario (OPUS_MAX_DIA por cliente, 6 por defecto)
 ACK_REVIEW = "Recibido ✅ Lo estamos revisando con tu ficha; en un par de minutos te respondemos."
 REVIEW_PROMPT = """Eres el estratega de Visión Agencia (Nogales, Sonora). Revisas la ficha de un cliente cada vez que llega un mensaje
 en su chat (del cliente o una nota de Carlos, el dueño) y decides si la estrategia debe cambiar.
@@ -1027,12 +1028,12 @@ class Cliente:
         self.ficha = ficha(self.token)  # memoria del contenedor: decide con esto, sin consultar a nadie más
         self.ultimo_ack = 0
 
-    def fable(self, prompt: str) -> dict:
+    def fable(self, prompt: str, modelo: str = FABLE_MODEL) -> dict:
         import subprocess
         e = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC", "CLAUDE"))}  # que mande la sesión de la cuenta
         e["CLAUDE_CONFIG_DIR"] = "/cuentas/" + env("FABLE_CUENTA", "claude3")
         cuentas_vol.reload()
-        r = subprocess.run(["claude", "-p", prompt, "--model", FABLE_MODEL, "--output-format", "text"],
+        r = subprocess.run(["claude", "-p", prompt, "--model", modelo, "--output-format", "text"],
                            capture_output=True, text=True, timeout=600, cwd="/tmp", env=e)
         try:
             cuentas_vol.commit()  # guarda el token si Claude Code lo renovó
@@ -1051,7 +1052,14 @@ class Cliente:
         dia = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 7 * 3600))
         cupo_key = f"fable:{self.token}:{dia}"
         usados = db.get(cupo_key, 0) or 0
-        if usados >= int(env("FABLE_MAX_DIA", "2")):  # tope diario para no acabarnos Fable
+        modelo, quien = FABLE_MODEL, "Fable"
+        if usados >= int(env("FABLE_MAX_DIA", "2")):  # tope de Fable: sigue Opus (13 nov, orden de Carlos: agilizar), con su propio tope
+            opus_key = f"opus:{self.token}:{dia}"
+            if (db.get(opus_key, 0) or 0) < int(env("OPUS_MAX_DIA", "6")):
+                db[opus_key] = (db.get(opus_key, 0) or 0) + 1
+                modelo, quien = OPUS_MODEL, "Opus"
+                usados = -1  # no cuenta contra Fable
+        if usados >= int(env("FABLE_MAX_DIA", "2")):  # sin Fable ni Opus: queda para Carlos
             put("inbox", {"phone": only_digits(chat_id), "chatId": chat_id, "name": self.ficha.get("cliente", ""), "clientId": "",
                           "text": trigger, "category": "seguimiento", "urgency": "media",
                           "summary": "Tope de Fable del día alcanzado: revisar a mano", "missing": [], "draft": "",
@@ -1063,16 +1071,17 @@ class Cliente:
                                        "Escribe «¿cómo va?» cuando quieras para ver el avance.")
             bitacora(self.token, f"Pidió: «{trigger[:120]}» (anotado para Carlos)")
             return {"ok": True, "tope": True}
-        db[cupo_key] = usados + 1
+        if quien == "Fable":
+            db[cupo_key] = usados + 1
         chat = await fetch_chat(chat_id)
         vista = {k: self.ficha.get(k) for k in ("cliente", "mensaje", "estrategia")}
         vista["piezas"] = [{"titulo": p.get("titulo"), "nota": p.get("nota")} for p in self.ficha.get("extras", []) or []]
         prompt = REVIEW_PROMPT.format(ficha=json.dumps(vista, ensure_ascii=False)[:6000],
                                       chat=json.dumps(chat[-25:], ensure_ascii=False), trigger=(nota or trigger)[:800], autor="CARLOS" if nota else "CLIENTE")
         try:
-            out, by = self.fable(prompt), "fable"
+            out, by = self.fable(prompt, modelo), quien.lower()
         except Exception as e:
-            await tell_owner(f"Visión OS: Fable no pudo revisar la ficha de {self.ficha.get('cliente')}: {str(e)[:200]}")
+            await tell_owner(f"Visión OS: {quien} no pudo revisar la ficha de {self.ficha.get('cliente')}: {str(e)[:200]}")
             return {"ok": False, "error": str(e)[:200]}
         texto = str(out.get("respuesta_cliente") or "").strip()
         if MONEY.search(texto + str(out.get("plan_una_frase", ""))):
@@ -1095,12 +1104,12 @@ class Cliente:
             f["revisadoEl"] = sonora_now()
             d[self.token] = f
             self.ficha = f
-        bitacora(self.token, "Fable revisó su ficha" + (" y reorganizó la estrategia" if out.get("cambia_estrategia") else " (sin cambios)"))
+        bitacora(self.token, "Revisamos tu ficha" + (" y reorganizamos la estrategia" if out.get("cambia_estrategia") else " (sin cambios)"))
         put("inbox", {"phone": only_digits(chat_id), "chatId": chat_id, "name": self.ficha.get("cliente", ""), "clientId": "",
                       "text": trigger, "category": "seguimiento", "urgency": "media",
-                      "summary": "Fable revisó su ficha" + (" y la reorganizó" if out.get("cambia_estrategia") else ""),
+                      "summary": f"{quien} revisó su ficha" + (" y la reorganizó" if out.get("cambia_estrategia") else ""),
                       "missing": [], "draft": texto, "by": by, "read": False, "sent": sent})
-        await tell_owner(f"Visión OS: Fable revisó la ficha de {self.ficha.get('cliente')} "
+        await tell_owner(f"Visión OS: {quien} revisó la ficha de {self.ficha.get('cliente')} "
                          f"({'la reorganizó' if out.get('cambia_estrategia') else 'sin cambios'}; {round(time.time()-t0)} s; "
                          f"{'respuesta enviada' if sent else 'respuesta NO enviada'}).")
         return {"ok": True, "cambia": bool(out.get("cambia_estrategia")), "sent": sent, "seg": round(time.time() - t0, 1),
