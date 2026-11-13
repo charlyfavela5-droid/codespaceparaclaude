@@ -154,10 +154,10 @@ def _fig(tok, p):
     e = html.escape
     nota = "" if p["nota"] is None else f'<span class="n {"ok" if p["nota"] >= 8 else "am"}">{p["nota"]:g} de 10</span> '
     if p["es_imagen"]:
-        medio = f'<a href="{tok}/m/{e(p["foto"])}"><img src="{tok}/m/{e(p["foto"])}" alt="{e(p["titulo"])}" loading="lazy"></a>'
+        medio = f'<a href="/{tok}/m/{e(p["foto"])}"><img src="/{tok}/m/{e(p["foto"])}" alt="{e(p["titulo"])}" loading="lazy"></a>'
     else:
-        poster = f' poster="{tok}/m/{e(p["foto"])}"' if p["foto"] else ""
-        medio = f'<video controls playsinline preload="none"{poster} src="{tok}/m/{e(p["video"])}"></video>'
+        poster = f' poster="/{tok}/m/{e(p["foto"])}"' if p["foto"] else ""
+        medio = f'<video controls playsinline preload="none"{poster} src="/{tok}/m/{e(p["video"])}"></video>'
     det = f'<br><span class="mut">{e(p["detalle"])}</span>' if p.get("detalle") else ""
     return f'<figure>{medio}<figcaption>{nota}{e(p["titulo"])}<br><span class="mut">{e(p["fecha"])}</span>{det}</figcaption></figure>'
 
@@ -181,7 +181,7 @@ CSS_AG = """.ags{display:grid;grid-template-columns:repeat(auto-fill,minmax(260p
 .ag{border:1px solid var(--l);border-radius:12px;padding:12px 14px;background:var(--c)}
 .ag h3{font-size:1rem;margin:0 0 4px;display:flex;justify-content:space-between;gap:8px;align-items:center}
 .ag p{margin:4px 0 0;font-size:.93rem}.est{font-size:.78rem;font-weight:700;border-radius:999px;padding:1px 9px;white-space:nowrap;border:1px solid currentColor}
-.est.listo{color:var(--ok)}.est.trab{color:#1f6fd1}.est.esp{color:var(--am)}
+.est.listo{color:var(--ok)}.est.trab{color:#1f6fd1}.est.esp,.est.falta{color:var(--am)}.est.fila{color:var(--m)}
 @media(prefers-color-scheme:dark){.est.trab{color:#6fb0ff}}
 .est.trab:before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor;margin-right:5px;animation:lat 1.4s infinite}
 @keyframes lat{50%{opacity:.25}}@media(prefers-reduced-motion:reduce){.est.trab:before{animation:none}}
@@ -240,7 +240,7 @@ def _agentes(tok, reg, ps):
               (" y escogió la referencia que vamos a replicar con tu producto." if m_ref else ".")
         ag.append(("Buscador de referencias", "listo", txt))
     ag.append(("Diseñador de imágenes", "listo" if len(img8) >= 3 else "trab",
-               f"{len(img8)} imágenes de {camp} ya pasan la calificación de 8 o más."
+               f"{len(img8)} imágenes tuyas ya pasan la calificación de 8 o más."
                + ("" if len(img8) >= 3 else " Sigue ajustando las que faltan.")))
     if vid8:
         ag.append(("Editor de video", "listo", f"Tu video ya tiene {max(p['nota'] for p in vid8):g} de 10: entra a {camp}."))
@@ -262,7 +262,11 @@ def _agentes(tok, reg, ps):
         ag.append((f"Campaña {camp}", "esp",
                    f"Lista para armarse con las piezas de 8 o más. Solo falta tu OK: respóndenos «aprobado» por WhatsApp."))
 
-    est = {"listo": "Listo", "trab": "Trabajando", "esp": "Espera tu OK"}
+    # estado real que el equipo fija a mano (reg["agentes_notas"] = {nombre: [estado, texto]}): manda sobre lo calculado
+    notas = reg.get("agentes_notas") or {}
+    ag = [(n, *notas[n]) if n in notas else (n, s, t) for n, s, t in ag]
+    ag += [(n, s, t) for n, (s, t) in notas.items() if n not in {a[0] for a in ag}]
+    est = {"listo": "Listo", "trab": "Trabajando", "esp": "Espera tu OK", "fila": "En fila", "falta": "Falta algo de ti"}
     tarjetas = "".join(f"<div class='ag'><h3>{e(n)}<span class='est {s}'>{est[s]}</span></h3><p>{e(t)}</p></div>" for n, s, t in ag)
     lin = "".join(f"<li><b>{e(x.get('cuando', ''))}</b> · {e(_limpio(x.get('evento')))}</li>" for x in reversed(bit[-8:]))
     ahora = datetime.now(SONORA).strftime("%d/%m %H:%M")
