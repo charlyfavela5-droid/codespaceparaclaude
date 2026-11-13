@@ -166,9 +166,116 @@ def _estrategia(reg):
     t = (reg.get("estrategia") or "").strip()
     if not t:
         return ""
-    return (f"<h2>Estrategia para tu app: más pedidos y más choferes</h2>"
+    titulo = reg.get("estrategia_titulo") or ("Estrategia para tu app: más pedidos y más choferes" if reg.get("slug") == "amy-vip"
+                                              else "Tu estrategia")
+    return (f"<h2>{html.escape(titulo)}</h2>"
             f"<div class='caja' style='white-space:pre-wrap'>{html.escape(t)}</div>"
             f"<p class='mut'>{html.escape(reg.get('estrategia_pie') or '')}</p>")
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# AGENTES (13 nov 2026, orden de Carlos): el cliente ve en vivo qué agente trabaja en sus anuncios y qué hace,
+# con sus propios datos (piezas, calificaciones, referencias, bitácora y sus mensajes). Solo si reg["agentes"].
+# Nada de nombres internos (Glimmer, Codex…), notas para Carlos, precios ni bonos sin confirmar.
+CSS_AG = """.ags{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.ag{border:1px solid var(--l);border-radius:12px;padding:12px 14px;background:var(--c)}
+.ag h3{font-size:1rem;margin:0 0 4px;display:flex;justify-content:space-between;gap:8px;align-items:center}
+.ag p{margin:4px 0 0;font-size:.93rem}.est{font-size:.78rem;font-weight:700;border-radius:999px;padding:1px 9px;white-space:nowrap;border:1px solid currentColor}
+.est.listo{color:var(--ok)}.est.trab{color:#1f6fd1}.est.esp{color:var(--am)}
+@media(prefers-color-scheme:dark){.est.trab{color:#6fb0ff}}
+.est.trab:before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor;margin-right:5px;animation:lat 1.4s infinite}
+@keyframes lat{50%{opacity:.25}}@media(prefers-reduced-motion:reduce){.est.trab:before{animation:none}}
+.lin{list-style:none;padding:0;margin:0}.lin li{border-left:3px solid var(--l);padding:4px 0 8px 12px;font-size:.93rem}.lin b{font-weight:600}"""
+
+INTERNO = [(r"\s*\(anotado para Carlos\)", " (lo recibió el equipo)"), (r"\bGlimmer\b", "la calificación"), (r"\bCarlos\b", "el equipo"),
+           (r"\bCodex\b|\bChatGPT\b|\bQwen\b|\bFable[\w .]*", "nuestra IA"), (r"\(≈[^)]*\)", "")]
+
+
+def _limpio(t):
+    t = str(t or "")
+    for a, b in INTERNO:
+        t = re.sub(a, b, t)
+    t = re.sub(r"^Pidió: ", "Nos escribiste: ", t)
+    t = re.sub(r"^Se le mandaron", "Te mandamos", t)
+    t = re.sub(r",?\s*siguiente paso.*$", "", t)
+    return re.sub(r"\s{2,}", " ", t).strip()
+
+
+def _agentes(tok, reg, ps):
+    if not reg.get("agentes"):
+        return ""
+    e = html.escape
+    camp = reg.get("campana") or "tu campaña"
+    db = modal.Dict.from_name("vision-os-db")
+    try:
+        bit = db.get(f"bitacora:{tok}") or []
+    except Exception:
+        bit = []
+    chat = reg.get("chatId") or ""
+    ultimo_msj, aprobado = None, False
+    try:
+        for k in db.keys():
+            if chat and k.startswith(f"aprobado:{chat}:"):
+                aprobado = True
+            elif chat and k.startswith("inbox:"):
+                m = db.get(k) or {}
+                if m.get("chatId") == chat and (ultimo_msj is None or m.get("updatedAt", 0) > ultimo_msj.get("updatedAt", 0)):
+                    ultimo_msj = m
+    except Exception:
+        pass
+
+    imgs = [p for p in ps if p["es_imagen"]]
+    img8 = [p for p in imgs if (p["nota"] or 0) >= 8]
+    vids = [p for p in ps if not p["es_imagen"]]
+    vid8 = [p for p in vids if (p["nota"] or 0) >= 8]
+    mejor_v = max([p["nota"] for p in vids if p["nota"] is not None] or [0])
+    refs = reg.get("referencias") or []
+    m_ref = re.search(r"REFERENCIA ESCOGIDA:\s*(\S+)", reg.get("estrategia") or "")
+    revisados = next((re.search(r"(\d+) reels", x.get("evento", "")).group(1) for x in bit
+                      if re.search(r"(\d+) reels", x.get("evento", ""))), None)
+
+    ag = []  # (nombre, estado, texto)
+    if refs or m_ref:
+        txt = (f"Revisó {revisados} reels de autos en Instagram" if revisados else f"Juntó {len(refs)} reels muy vistos de autos") + \
+              (" y escogió la referencia que vamos a replicar con tu producto." if m_ref else ".")
+        ag.append(("Buscador de referencias", "listo", txt))
+    ag.append(("Diseñador de imágenes", "listo" if len(img8) >= 3 else "trab",
+               f"{len(img8)} imágenes de {camp} ya pasan la calificación de 8 o más."
+               + ("" if len(img8) >= 3 else " Sigue ajustando las que faltan.")))
+    if vid8:
+        ag.append(("Editor de video", "listo", f"Tu video ya tiene {max(p['nota'] for p in vid8):g} de 10: entra a {camp}."))
+    else:
+        ag.append(("Editor de video", "trab",
+                   f"Tu mejor video va en {mejor_v:g} de 10. Lo está ajustando al estilo de tu referencia para llegar a 8; "
+                   f"mientras, {camp} puede arrancar con las imágenes." if mejor_v else
+                   f"Armando tu video al estilo de tu referencia."))
+    n_cal = sum(1 for p in ps if p["nota"] is not None)
+    ag.append(("Calificador de anuncios", "trab" if not vid8 else "listo",
+               f"Calificó {n_cal} piezas de 0 a 10. Solo deja pasar a tu campaña lo que llega a 8, porque es lo que trae mensajes."))
+    if ultimo_msj:
+        cuando = datetime.fromtimestamp(ultimo_msj.get("updatedAt", 0), SONORA).strftime("%d/%m %H:%M")
+        ag.append(("Atención por WhatsApp", "listo",
+                   f"Recibió tu último mensaje «{_limpio(ultimo_msj.get('text'))[:60]}» ({cuando}) y lo pasó al equipo."))
+    if aprobado:
+        ag.append((f"Campaña {camp}", "trab", f"Ya aprobaste: estamos armando {camp} con las piezas de 8 o más. Se enciende cuando esté revisada."))
+    else:
+        ag.append((f"Campaña {camp}", "esp",
+                   f"Lista para armarse con las piezas de 8 o más. Solo falta tu OK: respóndenos «aprobado» por WhatsApp."))
+
+    est = {"listo": "Listo", "trab": "Trabajando", "esp": "Espera tu OK"}
+    tarjetas = "".join(f"<div class='ag'><h3>{e(n)}<span class='est {s}'>{est[s]}</span></h3><p>{e(t)}</p></div>" for n, s, t in ag)
+    lin = "".join(f"<li><b>{e(x.get('cuando', ''))}</b> · {e(_limpio(x.get('evento')))}</li>" for x in reversed(bit[-8:]))
+    ahora = datetime.now(SONORA).strftime("%d/%m %H:%M")
+    return (f"<section id='agentes'><h2>Tu equipo trabajando en {e(camp)}</h2>"
+            f"<p class='mut'>Cada agente trabaja con tu información: tus piezas, tus calificaciones, tu referencia y tus mensajes. "
+            f"Se actualiza solo · {ahora} (hora de Sonora).</p><div class='ags'>{tarjetas}</div>"
+            + (f"<h2>Lo último que pasó</h2><ul class='lin'>{lin}</ul>" if lin else "") + "</section>")
+
+
+JS_AG = """<script>
+setInterval(async()=>{try{const r=await fetch(location.pathname.replace(/\\/$/,'')+'/agentes',{cache:'no-store'});
+ if(r.ok){const t=await r.text();const s=document.getElementById('agentes');if(s&&t)s.outerHTML=t}}catch(e){}},60000);
+</script>"""
 
 
 JS_GEN = """<script>
@@ -211,10 +318,10 @@ def _pagina(tok, reg, c):
             bloques.append(f"<h2>{titulo}</h2><div class='g'>" + "".join(_fig(tok, p) for p in grupo) + "</div>")
     nota = f"<p class='caja'>{e(reg.get('mensaje'))}</p>" if reg.get("mensaje") else ""
     return f"""<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex,nofollow"><title>{e(c.get('cliente'))} · Visión Agencia</title><style>{CSS}</style></head><body><main>
+<meta name="robots" content="noindex,nofollow"><title>{e(c.get('cliente'))} · Visión Agencia</title><style>{CSS}{CSS_AG}</style></head><body><main>
 <h1>{e(c.get('cliente'))} · tus anuncios</h1>
 <p class="mut">Visión Agencia · {len(ps)} piezas. La calificación es de 0 a 10; solo publicamos lo que llega a 8 o más, porque es lo que trae mensajes y no solo vistas.</p>
-{nota}{_sistema(reg["slug"], ps)}{''.join(bloques) or "<p>Todavía no hay piezas para mostrar.</p>"}{_estrategia(reg)}{_generador(reg)}
+{nota}{_agentes(tok, reg, ps)}{JS_AG if reg.get("agentes") else ""}{_sistema(reg["slug"], ps)}{''.join(bloques) or "<p>Todavía no hay piezas para mostrar.</p>"}{_estrategia(reg)}{_generador(reg)}
 <p class="mut">Dinos por WhatsApp cuáles apruebas o qué cambio quieres.</p></main></body></html>"""
 
 
@@ -255,6 +362,12 @@ def web():
         enlaces[tok] = {**reg, "gen": {"estado": "corriendo", "t": time.time(), "fecha": hoy, "n_hoy": n + 1, "msg": "Armando los anuncios…"}}
         producir.spawn(tok)
         return {"estado": "corriendo"}
+
+    @api.get("/{tok}/agentes", response_class=HTMLResponse)
+    def agentes(tok: str):
+        reg = _reg(tok)
+        c = _cliente(reg["slug"]) or {}
+        return HTMLResponse(_agentes(tok, reg, _piezas(c, reg.get("extras"))), headers={"Cache-Control": "no-store"})
 
     @api.get("/{tok}", response_class=HTMLResponse)
     def pagina(tok: str):
