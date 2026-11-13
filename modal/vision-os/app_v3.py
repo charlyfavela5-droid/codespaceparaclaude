@@ -402,6 +402,8 @@ def contar_envio(chat_id: str, kind: str):
 
 async def wa_send(chat_id: str, text: str, kind: str = "auto") -> dict:
     """kind: "auto" (respuesta automática), "acuse" (Recibido…), "manual" (desde el panel: no se frena)."""
+    if kind != "manual" and pausado(chat_id):  # chat en pausa: nada automático sale, ni de procesos que ya iban corriendo
+        return {"status": 423, "body": "pausado", "frenado": True}
     motivo = freno(chat_id, kind)
     if motivo:
         if kind not in ACK_KINDS:  # lo importante no se pierde: queda de borrador y a Carlos le avisa (1 vez por hora)
@@ -528,6 +530,14 @@ async def tell_owner(text: str):
             await wa_send(chat, text[:900])
         except Exception:
             pass
+
+
+def pausado(chat_id: str) -> bool:
+    """Chats detenidos por orden de Carlos (vision-os-db «pausados»: {chatId: {"quien", "cuando"}}). Reversible: quitar la llave."""
+    try:
+        return chat_id in (db.get("pausados") or {})
+    except Exception:
+        return False
 
 
 def blocked(chat_id: str) -> bool:
@@ -1438,6 +1448,18 @@ def build_web():
         if not expected or not hmac.compare_digest(secret.encode(), expected.encode()):
             raise HTTPException(404)
         payload = await request.json()
+
+        try:  # PAUSA: chats detenidos por Carlos. No se procesa, no se reenvía y no se contesta; solo queda en la bandeja.
+            m0 = extract_message(payload)
+        except Exception:
+            m0 = {}
+        if m0.get("sender") and pausado(m0["sender"]):
+            if not m0.get("from_me") and m0.get("body", "").strip():
+                put("inbox", {"phone": only_digits(m0["sender"]), "chatId": m0["sender"], "name": m0.get("name", ""), "clientId": "",
+                              "text": m0["body"], "category": "otro", "urgency": "media",
+                              "summary": "Chat en pausa: no se contestó ni se procesó.", "missing": [], "draft": "",
+                              "by": "pausa", "read": False, "sent": False})
+            return {"ignored": "pausado"}
 
         if env("FORWARD_URL"):  # WaAPI solo manda a una URL: se reenvía tal cual al otro webhook, en segundo plano
             async def _reenviar(p):
