@@ -272,6 +272,85 @@ def _agentes(tok, reg, ps):
             + (f"<h2>Lo último que pasó</h2><ul class='lin'>{lin}</ul>" if lin else "") + "</section>")
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# FICHA DE PROSPECTO (13 nov 2026, orden de Carlos: «siempre se atiende a los prospectos, convence con la ficha»).
+# Visión OS la crea al primer mensaje (reg["prospecto"], reg["prospectId"]) y la manda por WhatsApp. Se llena sola con lo que
+# el prospecto va diciendo (vision-os-db prospects:<id>). Solo cosas verdaderas: estados reales, el precio autorizado ($500)
+# y los resultados que Carlos ya usa en la bienvenida.
+RESULTADOS = [("Limpieza", "33 mensajes a $1.39 cada uno"), ("Impermeabilización", "18 mensajes a $2.87 cada uno")]
+CSS_PR = """.est.fila{color:var(--m)}.datos{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin:0;padding:0;list-style:none}
+.datos li{border:1px solid var(--l);border-radius:10px;padding:8px 12px;background:var(--c);font-size:.93rem}.datos b{display:block;font-size:.8rem;color:var(--m);font-weight:600}
+.falta{color:var(--am);font-weight:600}.ok8{font-size:1.05rem;line-height:1.55}"""
+
+
+def _prospecto(reg):
+    try:
+        return modal.Dict.from_name("vision-os-db").get(f"prospects:{reg.get('prospectId')}") or {}
+    except Exception:
+        return {}
+
+
+def _agentes_prospecto(tok, reg, p=None):
+    e = html.escape
+    p = p if p is not None else _prospecto(reg)
+    try:
+        bit = modal.Dict.from_name("vision-os-db").get(f"bitacora:{tok}") or []
+    except Exception:
+        bit = []
+    datos = {"Negocio": p.get("business"), "Giro": p.get("giro"), "Ciudad": p.get("city"), "Qué quiere anunciar": p.get("sells")}
+    faltan = [k for k, v in datos.items() if not v]
+    completo = not faltan
+    imgs, video = int(p.get("sampleImages") or 0), bool(p.get("sampleVideo"))
+    giro = p.get("giro") or "su giro"
+    ultimo = max((h for h in [p.get("updatedAt", 0)]), default=0)
+    ag = [("Atención por WhatsApp", "listo",
+           f"Recibió su mensaje{(' (' + datetime.fromtimestamp(ultimo, SONORA).strftime('%d/%m %H:%M') + ')') if ultimo else ''} "
+           "y le contesta en segundos, a cualquier hora."),
+          ("Ficha de su negocio", "listo" if completo else "esp",
+           "Ya tenemos sus datos para armar la muestra." if completo else f"Nos falta: {', '.join(faltan).lower()}.")]
+    if completo:
+        ag += [("Buscador de referencias", "fila", f"Va a revisar los videos más virales de {giro} para encontrar el ángulo que más convence."),
+               ("Diseñador de imágenes", "listo" if imgs >= 3 else ("trab" if imgs else "fila"),
+                f"{imgs} de 3 imágenes de su muestra." + ("" if imgs >= 3 else " Con fotos reales de su negocio salen más fuertes.")),
+               ("Editor de video", "listo" if video else "fila", "Su video está listo." if video else "Arma su video al estilo de la referencia."),
+               ("Calificador de anuncios", "fila", "Califica cada pieza de 0 a 10 antes de enseñársela; solo pasa lo que llega a 8.")]
+    else:
+        ag += [("Buscador de referencias", "esp", "Arranca en cuanto sepamos su giro y su ciudad."),
+               ("Diseñador de imágenes y video", "esp", "Arma sus 3 imágenes y 1 video en cuanto tengamos sus datos (y sus fotos, si las tiene)."),
+               ("Calificador de anuncios", "esp", "Califica cada pieza de 0 a 10; solo le enseñamos lo que llega a 8.")]
+    est = {"listo": "Listo", "trab": "Trabajando", "fila": "En fila", "esp": "Espera sus datos"}
+    tarjetas = "".join(f"<div class='ag'><h3>{e(n)}<span class='est {s}'>{est[s]}</span></h3><p>{e(t)}</p></div>" for n, s, t in ag)
+    lin = "".join(f"<li><b>{e(x.get('cuando', ''))}</b> · {e(_limpio(x.get('evento')))}</li>" for x in reversed(bit[-8:]))
+    return (f"<section id='agentes'><h2>Su equipo de agentes</h2>"
+            f"<p class='mut'>Trabajan con la información que usted nos da por WhatsApp. Se actualiza solo · "
+            f"{datetime.now(SONORA).strftime('%d/%m %H:%M')} (hora de Sonora).</p><div class='ags'>{tarjetas}</div>"
+            + (f"<h2>Lo último que pasó</h2><ul class='lin'>{lin}</ul>" if lin else "") + "</section>")
+
+
+def _pagina_prospecto(tok, reg):
+    e = html.escape
+    p = _prospecto(reg)
+    nombre = p.get("business") or p.get("name") or reg.get("cliente") or "Su negocio"
+    datos = [("Negocio", p.get("business")), ("Giro", p.get("giro")), ("Ciudad", p.get("city")), ("Qué quiere anunciar", p.get("sells"))]
+    lis = "".join(f"<li><b>{k}</b>{e(v) if v else '<span class=falta>Falta: mándenoslo por WhatsApp</span>'}</li>" for k, v in datos)
+    res = "".join(f"<li><b>{e(a)}</b>{e(b)}</li>" for a, b in RESULTADOS)
+    return f"""<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>{e(nombre)} · Visión Agencia</title><style>{CSS}{CSS_AG}{CSS_PR}</style></head><body><main>
+<h1>{e(nombre)} · su muestra gratis</h1>
+<p class="mut">Visión Agencia · Sonora, 100% en línea con negocios de todo México.</p>
+<div class="caja ok8">Le armamos <b>gratis</b> una muestra de <b>3 imágenes y 1 video</b> con su propio material. Antes de gastar un peso en
+pauta, nuestro sistema califica cada anuncio de 0 a 10 y <b>solo se lanza lo que llega a 8</b>: abajo de 8 Facebook cobra por vistas y no
+llegan mensajes. Si le convence la muestra, son <b>$500</b>.</div>
+{_agentes_prospecto(tok, reg, p)}{JS_AG}
+<h2>Lo que sabemos de su negocio</h2><ul class="datos">{lis}</ul>
+<h2>Lo que nos ayuda de usted</h2>
+<ul class="lin"><li>3 fotos o videos de su trabajo (del celular está bien). Si no tiene, generamos el material.</li>
+<li>Qué precio o promoción quiere anunciar.</li><li>Un reel o anuncio que le guste, de referencia.</li>
+<li>Un audio corto con su voz: el anuncio sale más fuerte que con voz genérica.</li></ul>
+<h2>Resultados reales de clientes nuestros</h2><ul class="datos">{res}</ul>
+<p class="mut">Mándenos todo por WhatsApp; esta página se actualiza sola con lo que nos vaya enviando.</p></main></body></html>"""
+
+
 JS_AG = """<script>
 setInterval(async()=>{try{const r=await fetch(location.pathname.replace(/\\/$/,'')+'/agentes',{cache:'no-store'});
  if(r.ok){const t=await r.text();const s=document.getElementById('agentes');if(s&&t)s.outerHTML=t}}catch(e){}},60000);
@@ -366,6 +445,8 @@ def web():
     @api.get("/{tok}/agentes", response_class=HTMLResponse)
     def agentes(tok: str):
         reg = _reg(tok)
+        if reg.get("prospecto"):
+            return HTMLResponse(_agentes_prospecto(tok, reg), headers={"Cache-Control": "no-store"})
         c = _cliente(reg["slug"]) or {}
         return HTMLResponse(_agentes(tok, reg, _piezas(c, reg.get("extras"))), headers={"Cache-Control": "no-store"})
 
@@ -376,6 +457,8 @@ def web():
         except Exception:
             pass
         reg = _reg(tok)
+        if reg.get("prospecto"):
+            return HTMLResponse(_pagina_prospecto(tok, reg), headers={"X-Robots-Tag": "noindex, nofollow", "Cache-Control": "no-store"})
         c = _cliente(reg["slug"])
         if not c:
             raise HTTPException(404, "Sin datos.")

@@ -232,6 +232,13 @@ ARGUMENTOS = [
 ]
 PIDE_MATERIAL = ("Para su muestra (3 imágenes y 1 video) nos ayuda mucho que nos mande por aquí fotos o videos de su negocio "
                  "y un audio corto con su voz. Si no tiene, la hacemos con material generado.")
+# SIEMPRE SE ATIENDE + FICHA (13 nov 2026, orden de Carlos): todo prospecto recibe respuesta y su ficha (enlaces-clientes),
+# donde ve en vivo a los agentes armando su muestra con lo que nos va diciendo.
+FICHAS_URL = "https://charlyfavela5--enlaces-clientes-web.us-east.modal.run"
+INFO_RE = re.compile(r"(m[aá]s\s+informaci[oó]n|\binfo\b|me\s+interesa|precio|costo|cotiza|anunci|publicidad|campa[ñn]a|muestra|promoci)", re.I)
+LINEA_FICHA = "👉 Su ficha: {url}\nAhí ve en vivo a nuestro equipo de agentes armando su muestra."
+ACK_SIEMPRE = ("Recibido ✅ Ya lo estamos viendo y en breve le contestamos.\n"
+               "Mientras, en su ficha ve cómo va su muestra: {url}")
 _tareas: set = set()  # tareas de fondo vivas (reenvío del webhook)
 WEB_MIN_CONTAINERS = 0  # 1 = acuse en ~1 s siempre (cuesta); 0 = gratis en reposo
 MONEY = re.compile(r"\$|\b\d[\d,.]*\s*(pesos|mxn|usd|dls|dólares|dolares|mil\b)", re.I)
@@ -604,6 +611,21 @@ def new_prospect(chat_id: str, body: str, name: str, fresh: bool = False) -> dic
                              "notes": body[:300], "history": [], "sentByDay": {}, "lastAck": 0})
 
 
+def ficha_prospecto(prospect: dict) -> str:
+    """Crea (una sola vez) la ficha del prospecto en enlaces-clientes y devuelve su enlace. Guarda el token en el prospecto."""
+    import secrets as _sec
+    enl = modal.Dict.from_name("enlaces-clientes")
+    tok = prospect.get("fichaToken")
+    if not tok or not (enl.get(tok) or {}).get("activo"):
+        tok = _sec.token_urlsafe(18)
+        enl[tok] = {"slug": f"prospecto-{prospect['id']}", "cliente": prospect.get("business") or prospect.get("name") or "Su negocio",
+                    "activo": True, "prospecto": True, "prospectId": prospect["id"], "agentes": True,
+                    "chatId": prospect.get("chatId", ""), "creado": sonora_now()}
+        prospect["fichaToken"] = tok
+        bitacora(tok, "Recibimos su mensaje y abrimos su ficha")
+    return f"{FICHAS_URL}/{tok}"
+
+
 async def quick_ack(m: dict) -> bool:
     """Acuse instantáneo desde el webhook, antes de la IA. Solo a prospectos y con los mismos candados."""
     chat = m["sender"]
@@ -667,14 +689,21 @@ async def attend_prospect(chat_id: str, body: str, name: str) -> dict:
         result["es_prospecto"] = True
         if first and result.get("etapa") == "no_interesado":
             result["etapa"] = "nuevo"
+    if INFO_RE.search(body or ""):  # «Quiero más información», precio, anuncio…: es prospecto aunque el modelo dude
+        result["es_prospecto"] = True
+        if first and result.get("etapa") == "no_interesado":
+            result["etapa"] = "nuevo"
     decision = prospect_rules(result, prospect, first)
     if first and result.get("es_prospecto", True) and not prospect.get("paused"):  # bienvenida fija de Carlos
         decision.update(send=True, text=FIRST_PITCH, escalate=bool(result.get("escalate")))
 
     # datos: solo se guardan los que vengan con contenido; nunca se borra lo que ya había
+    nuevos = []
     for src, dst in (("nombre", "name"), ("negocio", "business"), ("giro", "giro"), ("ciudad", "city"), ("que_vende", "sells")):
         val = str(result.get(src) or "").strip()
         if val and val.lower() not in ("sin dato", "n/a", "desconocido"):
+            if dst != "name" and val[:120] != prospect.get(dst):
+                nuevos.append(val[:60])
             prospect[dst] = val[:120]
     was_complete = prospect.get("stage") == "datos_completos"
     complete = all(prospect.get(k) for k in ("business", "giro", "city", "sells"))
@@ -685,12 +714,43 @@ async def attend_prospect(chat_id: str, body: str, name: str) -> dict:
     elif not first or decision["send"]:
         prospect["stage"] = "pidiendo_datos"
 
+    # ficha del prospecto: se crea al primer mensaje y se le manda; registra en su bitácora lo que nos va diciendo
+    url = ""
+    atender = result.get("es_prospecto", True) and not prospect.get("paused") and prospect.get("stage") != "no_interesado"
+    if atender:
+        try:
+            ya_tenia = bool(prospect.get("fichaToken"))
+            url = ficha_prospecto(prospect)
+            tok = prospect["fichaToken"]
+            if nuevos:
+                bitacora(tok, "Recibimos sus datos: " + " · ".join(nuevos))
+            if complete and not was_complete:
+                bitacora(tok, "Datos completos: su muestra entra en fila")
+            if not ya_tenia and not first:  # prospecto de antes: la ficha va en esta respuesta
+                prospect["fichaPendiente"] = True
+        except Exception as e:
+            url = ""
+            print("ficha_prospecto falló:", str(e)[:200])
+    linea = LINEA_FICHA.format(url=url) if url else ""
+    if first and decision["send"] and linea:
+        decision["text"] = decision["text"].rstrip() + "\n\n" + linea
+    # SIEMPRE SE ATIENDE: si las reglas lo dejaban sin respuesta (IA sin texto, IA caída, tope del día) sale un acuse con su ficha
+    if atender and (not decision["send"] or not decision["text"]) and url:
+        decision.update(send=True, text=ACK_SIEMPRE.format(url=url), escalate=True,
+                        why=decision.get("why") or "sin respuesta de la IA: salió acuse con su ficha")
+
     second = not first and not prospect.get("pitch2") and not decision["escalate"] and prospect.get("stage") != "no_interesado"
     sent = False
     puede = env("AUTO_REPLY") == "1" or prospect_allowed(chat_id)
+    if decision["send"] and decision["text"] and not first and linea and prospect.get("fichaPendiente") \
+            and url not in decision["text"]:
+        decision["text"] = decision["text"].rstrip() + "\n\n" + linea
+        prospect["fichaPendiente"] = False
     if decision["send"] and decision["text"] and not decision["escalate"] and not first and not second:
         if complete and not was_complete and prospect.get("sample", "pendiente") != "entregada":
             decision["text"] = decision["text"].rstrip() + "\n\n" + PIDE_MATERIAL  # ya dio datos: pedir material
+            if url:
+                decision["text"] += f"\nSu ficha ya muestra sus datos: {url}"
         elif prospect.get("replies", 0) % 3 == 1:  # poca dosis: 1 de cada 3 respuestas
             n = prospect.get("replies", 0)
             decision["text"] = decision["text"].rstrip() + "\n\n" + ARGUMENTOS[(n // 3) % len(ARGUMENTOS)]
