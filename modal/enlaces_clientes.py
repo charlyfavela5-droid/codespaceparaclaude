@@ -73,7 +73,7 @@ def _piezas(c, extras=None):
         if os.path.isfile(x["ruta"]):
             out.insert(i, {"titulo": x["titulo"], "fecha": x.get("fecha", ""), "nota": x.get("nota"), "video": "", "foto": x["archivo"],
                            "es_imagen": True, "ruta": x["ruta"], "detalle": x.get("detalle", "")})
-    carpeta = None if extras else CARPETAS.get(c.get("slug"))  # con piezas propias no se muestran las de la tanda
+    carpeta = CARPETAS.get(c.get("slug"))  # la tanda del 12 nov se sigue mostrando aunque haya piezas nuevas (no se le quita nada al cliente)
     if carpeta:
         try:
             resp = str((modal.Dict.from_name("glimmer-tanda-20261112").get(carpeta) or {}).get("respuesta", ""))
@@ -339,13 +339,13 @@ def _pagina_prospecto(tok, reg):
     lis = "".join(f"<li><b>{k}</b>{e(v) if v else '<span class=falta>Falta: mándenoslo por WhatsApp</span>'}</li>" for k, v in datos)
     res = "".join(f"<li><b>{e(a)}</b>{e(b)}</li>" for a, b in RESULTADOS)
     return f"""<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex,nofollow"><title>{e(nombre)} · Visión Agencia</title><style>{CSS}{CSS_AG}{CSS_PR}</style></head><body><main>
+<meta name="robots" content="noindex,nofollow"><title>{e(nombre)} · Visión Agencia</title><style>{CSS}{CSS_AG}{CSS_PR}{CSS_EN}</style></head><body><main>
 <h1>{e(nombre)} · su muestra gratis</h1>
 <p class="mut">Visión Agencia · Sonora, 100% en línea con negocios de todo México.</p>
 <div class="caja ok8">Le armamos <b>gratis</b> una muestra de <b>3 imágenes y 1 video</b> con su propio material. Antes de gastar un peso en
 pauta, nuestro sistema califica cada anuncio de 0 a 10 y <b>solo se lanza lo que llega a 8</b>: abajo de 8 Facebook cobra por vistas y no
 llegan mensajes. Si le convence la muestra, son <b>$500</b>.</div>
-{_agentes_prospecto(tok, reg, p)}{JS_AG}
+{_pedir_anuncio(reg, True)}{JS_AN if reg.get('pedir_anuncio') else ''}{_agentes_prospecto(tok, reg, p)}{JS_AG}
 <h2>Lo que sabemos de su negocio</h2><ul class="datos">{lis}</ul>
 <h2>Lo que nos ayuda de usted</h2>
 <ul class="lin"><li>3 fotos o videos de su trabajo (del celular está bien). Si no tiene, generamos el material.</li>
@@ -356,8 +356,9 @@ llegan mensajes. Si le convence la muestra, son <b>$500</b>.</div>
 
 
 JS_AG = """<script>
-setInterval(async()=>{try{const r=await fetch(location.pathname.replace(/\\/$/,'')+'/agentes',{cache:'no-store'});
- if(r.ok){const t=await r.text();const s=document.getElementById('agentes');if(s&&t)s.outerHTML=t}}catch(e){}},60000);
+const cargaAg=async()=>{try{const r=await fetch(location.pathname.replace(/\\/$/,'')+'/agentes',{cache:'no-store'});
+ if(r.ok){const t=await r.text();const s=document.getElementById('agentes');if(s&&t)s.outerHTML=t}}catch(e){}};
+if(document.querySelector('#agentes[data-pendiente]'))cargaAg();setInterval(cargaAg,60000);
 </script>"""
 
 
@@ -387,24 +388,200 @@ def _generador(reg):
             f"Solo los de 8 o más pasan a la ficha de la clienta; los demás quedan en esta página en revisión. Máximo 2 corridas al día.</p></div>{JS_GEN}")
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# PIDE TU ANUNCIO (14 nov 2026, orden de Carlos): mientras el generador de calidad no está, el cliente escribe qué quiere
+# anunciar y la ficha le da AL INSTANTE el prompt para usarlo en ChatGPT con su propia foto. Solo si reg["pedir_anuncio"].
+# El prompt es una plantilla fija con los datos confirmados del cliente: no pasa por ningún modelo, no inventa nada.
+AVISO_ANUNCIO = ("Solo nos falta 1 detalle: nuestro sistema súper rápido se quedó sin el modelo que genera tus imágenes con la calidad que "
+                 "queremos darte de inmediato. Mientras lo resolvemos, aquí te damos al instante el prompt (las instrucciones) para que "
+                 "generes tu anuncio en ChatGPT.")
+APOYO_PAGADO = ("Tú ya cubriste tu apoyo de $500, así que a ti no te lo pedimos. Se lo estamos solicitando a los demás clientes para "
+                "asegurar la atención inmediata del sistema automático.")
+APOYO_ANUNCIO = ("Si gustas apoyar al sistema automático, puedes hacerlo con otro pago de $500: es el cobro que queremos manejar por asegurarte "
+                 "atención inmediata y seguir buscando resultados excepcionales con buena calificación. Escríbenos por WhatsApp y te decimos cómo.")
+MAX_ANUNCIOS_DIA = 6
+NOTA_INTERNA = re.compile(r"Carlos|no hay |no están|sin confirmar|quiere más|confirmar\)", re.I)
+
+
+def _solo_cliente(datos):
+    """Quita de los datos confirmados las notas del equipo (lo que falta confirmar, quién lo mandó…)."""
+    partes = [re.sub(r"\s*\([^)]*\)", "", x).strip() for x in re.split(r"(?<=[.;])\s+", str(datos or ""))]
+    return " ".join(x for x in partes if x and not NOTA_INTERNA.search(x)).strip(" ;")
+
+
+def _datos_anuncio(reg):
+    """(negocio, datos confirmados) de lo que ya está guardado para ese cliente o prospecto."""
+    cfg = reg.get("entrega_cfg") or ANUNCIOS.get(reg.get("slug")) or {}
+    if cfg.get("negocio"):
+        return re.sub(r";\s*campaña.*$", ".", cfg["negocio"]), _solo_cliente(cfg.get("datos", ""))
+    if reg.get("prospecto"):
+        p = _prospecto(reg)
+        neg = ", ".join(x for x in [p.get("business"), p.get("giro"), p.get("city")] if x)
+        return neg or (reg.get("cliente") or ""), (f"Quiere anunciar: {p['sells']}" if p.get("sells") else "")
+    return reg.get("cliente") or "", ""
+
+
+def _prompt_anuncio(reg, pedido):
+    negocio, datos = _datos_anuncio(reg)
+    return ("Actúa como diseñador de anuncios para Facebook e Instagram en México.\n"
+            "Crea UNA imagen vertical 4:5 (1080 x 1350 px) lista para publicarse como anuncio.\n\n"
+            f"NEGOCIO: {negocio or '(escribe aquí el nombre y giro de tu negocio)'}\n"
+            + (f"DATOS CONFIRMADOS: {datos}\n" if datos else "")
+            + f"LO QUE QUIERO ANUNCIAR: {pedido}\n\n"
+            "FOTO: usa la foto que te adjunto como base. No cambies la cara de las personas ni el producto; solo mejora luz, encuadre y fondo.\n"
+            "(Si no adjunto foto, haz una foto realista del producto o servicio, sin personas famosas ni logotipos de otras marcas.)\n\n"
+            "TEXTO SOBRE LA IMAGEN (español de México, con acentos correctos, letras grandes que se lean en el celular):\n"
+            "1. Un titular de máximo 6 palabras que diga el beneficio principal.\n"
+            "2. Hasta 3 beneficios cortos con palomita.\n"
+            "3. Un solo llamado a la acción: «Escríbenos por WhatsApp» con mi número.\n\n"
+            "REGLAS:\n"
+            "- No inventes precios, promociones, fechas, garantías ni resultados: usa solo lo que te di arriba.\n"
+            "- Nada de texto pequeño ni párrafos; que se entienda en 2 segundos.\n"
+            "- Colores con buen contraste y el rostro o el producto bien visible, sin taparlo con texto.\n"
+            "- Antes de darme la imagen, revisa la ortografía de cada palabra.")
+
+
+def _ejemplo_calidad(c):
+    """La mejor imagen de ESE cliente hecha con el modelo de calidad (registrada en el tablero como «Imagen ChatGPT»)."""
+    mejor = None
+    for v in (c or {}).get("versiones") or []:
+        foto = (v.get("purl") or "").rsplit("/", 1)[-1]
+        if not (v.get("es_imagen") and foto and re.search(r"ChatGPT|Codex", str(v.get("version") or "")) and os.path.isfile(f"{TAB}/p/{foto}")):
+            continue
+        try:
+            nota = float(v.get("actual"))
+        except (TypeError, ValueError):
+            continue
+        if mejor is None or nota > mejor["nota"]:
+            mejor = {"foto": foto, "nota": nota, "titulo": _titulo(v), "fecha": str(v.get("fecha") or "")}
+    return mejor
+
+
+def _apoyo(reg):
+    """Propuesta de apoyo ($500). Quien ya lo pagó (reg["apoyo_pagado"]) ve que a él no se le pide."""
+    if not reg.get("pedir_anuncio") or reg.get("prospecto"):
+        return ""
+    return ("<h2>Apoyo al sistema automático</h2><p class='caja'>"
+            + html.escape(APOYO_PAGADO if reg.get("apoyo_pagado") else APOYO_ANUNCIO) + "</p>")
+
+
+def _pedir_anuncio(reg, usted=False, tok="", c=None):
+    if not reg.get("pedir_anuncio"):
+        return ""
+    e = html.escape
+    ej = _ejemplo_calidad(c)
+    muestra = (f"<p><b>Así se ve la calidad que vas a recibir al instante en cuanto quede resuelto</b> (anuncio tuyo, {ej['nota']:g} de 10):</p>"
+               f"<figure style='max-width:340px'><a href='/{tok}/m/{e(ej['foto'])}'><img src='/{tok}/m/{e(ej['foto'])}' alt='{e(ej['titulo'])}' loading='lazy'></a>"
+               f"<figcaption>{e(ej['titulo'])}<br><span class='mut'>{e(ej['fecha'])}</span></figcaption></figure>") if ej and tok else ""
+    tu = ("Escriba qué quiere anunciar", "Cópielo, péguelo en ChatGPT junto con una foto de su negocio y mándenos el resultado por WhatsApp para revisarlo.") if usted else \
+         ("Escribe qué quieres anunciar", "Cópialo, pégalo en ChatGPT junto con una foto de tu negocio y mándanos el resultado por WhatsApp para revisarlo.")
+    ult = (reg.get("anuncios_pedidos") or [])[-1:] or [{}]
+    if not reg.get("interno"):
+        como = ("Escríbanos por WhatsApp qué quiere anunciar (producto, promoción, a quién va dirigido) y su material aparece aquí en cuanto esté listo."
+                if usted else
+                "Escríbenos por WhatsApp qué quieres anunciar (producto, promoción, a quién va dirigido) y tu material aparece aquí en cuanto esté listo. "
+                "Por ahí mismo nos puedes pedir o sugerir cambios.")
+        return (f"<section id='pidean'><h2>{'Pida su anuncio por WhatsApp' if usted else 'Pide tu anuncio por WhatsApp'}</h2>"
+                f"<p class='caja'>{como}</p><p class='caja' style='border-left-color:var(--am)'>{e(AVISO_ANUNCIO.split(" Mientras lo resolvemos")[0])} Mientras lo resolvemos, tus imágenes siguen saliendo al momento.</p></section>")
+    return (f"<section id='pidean'><h2>{'Pida su anuncio' if usted else 'Pide un anuncio nuevo'}</h2><p class='caja' style='border-left-color:var(--am)'>{e(AVISO_ANUNCIO)}</p>"
+
+            f"<div class='caja'><textarea id='anq' class='cajat' maxlength='400' placeholder='{tu[0]} (producto, promoción, a quién va dirigido…)'></textarea>"
+            f"<p><button class='btn' id='anbtn'>Darme mi prompt</button> <span id='anmsg' class='mut'></span></p>"
+            f"<textarea id='anout' class='cajat' style='min-height:260px;{'' if ult[0].get('prompt') else 'display:none'}' readonly>{e(ult[0].get('prompt', ''))}</textarea>"
+            f"<p id='ancop' style='{'' if ult[0].get('prompt') else 'display:none'}'><button class='btn sec' id='ancopy'>Copiar</button> <span class='mut'>{tu[1]}</span></p></div></section>")
+
+
+JS_AN = """<script>
+(()=>{const base=location.pathname.replace(/\\/$/,''),q=i=>document.getElementById(i);
+document.addEventListener('click',async ev=>{
+ if(ev.target.id==='ancopy'){try{await navigator.clipboard.writeText(q('anout').value);ev.target.textContent='Copiado ✓'}catch(e){q('anout').select()}}
+ if(ev.target.id!=='anbtn')return;const m=q('anmsg');m.textContent='Armando…';
+ try{const r=await fetch(base+'/anuncio',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({texto:q('anq').value})});
+  const d=await r.json();if(!r.ok){m.textContent=d.detail||'No se pudo';return}
+  q('anout').value=d.prompt;q('anout').style.display='';q('ancop').style.display='';m.textContent=d.imagenes?'Listo. Tus imágenes ya se están armando; aparecen aquí abajo en un momento…':'Listo.';
+  if(d.imagenes)setTimeout(()=>location.reload(),9000)}catch(e){m.textContent='Sin conexión; intenta otra vez'}});})();
+</script>"""
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# ENTREGA RÁPIDA (14 nov 2026, orden de Carlos): avance paso a paso de la entrega (lo escribe la app entrega-rapida en
+# reg["entrega"]), los cuadros del video y dos botones para el cliente: pedir un cambio o más ángulos.
+CSS_EN = """.pasos{display:grid;gap:8px}.btn{font:inherit;font-weight:700;padding:10px 18px;border-radius:10px;border:0;background:#23A960;color:#fff;cursor:pointer}
+.btn.sec{background:transparent;color:var(--t);border:1px solid var(--l)}.btn:disabled{opacity:.5;cursor:default}
+#cambio,.cajat{width:100%;min-height:74px;font:inherit;padding:10px;border-radius:10px;border:1px solid var(--l);background:var(--b);color:var(--t)}"""
+MAX_PEDIDOS_DIA, MAX_ANGULOS_DIA = 6, 2
+
+
+def _entrega(tok, reg):
+    en = reg.get("entrega")
+    if not en or not en.get("etapas"):
+        return ""
+    e = html.escape
+    est = {"listo": "Listo", "trab": "Trabajando", "fila": "En fila", "falta": "En revisión"}
+    etapas = en["etapas"]
+    hechas = sum(1 for x in etapas if x.get("e") == "listo")
+    vivo = en.get("estado") == "corriendo" and time.time() - en.get("t", 0) < 900
+    pct = round(100 * hechas / len(etapas))
+    pasos = "".join(f"<div class='ag'><h3>{i}. {e(x['n'])}<span class='est {e(x.get('e', 'fila'))}'>{est.get(x.get('e'), '')}</span></h3>"
+                    f"<p class='mut'>{e(x.get('d', ''))}</p></div>" for i, x in enumerate(etapas, 1))
+    total = f" · lista en {en['total_s']:g} segundos" if en.get("total_s") and not vivo else ""
+    cuadros = "".join(f'<figure><a href="/{tok}/m/{e(c["archivo"])}"><img src="/{tok}/m/{e(c["archivo"])}" alt="{e(c["titulo"])}" loading="lazy"></a>'
+                      f'<figcaption>{e(c["titulo"])}</figcaption></figure>' for c in en.get("cuadros") or [])
+    peds = "".join(f"<li><b>{e(x.get('cuando', ''))}</b> · {'Pediste más ángulos' if x.get('tipo') == 'angulos' else 'Pediste un cambio: «' + e(x.get('texto', '')) + '»'}"
+                   f" · lo recibió el equipo</li>" for x in reversed((en.get("pedidos") or [])[-4:]))
+    mas = (f"<button class='btn sec' id='masang'{' disabled' if vivo else ''}>Quiero más ángulos</button> " if en.get("quedan_angulos") else "")
+    return (f"<section id='entrega' data-vivo='{1 if vivo else 0}'><h2>Tu entrega de hoy</h2>"
+            f"<p class='mut'><span class='bar'><i style='width:{pct}%'></i></span><b>{hechas} de {len(etapas)} pasos</b>{total}</p>"
+            f"<div class='pasos'>{pasos}</div>"
+            + (f"<h2>Cuadros de tu video</h2><p class='mut'>Es la guía toma por toma; con tu visto bueno se arma el video.</p><div class='g'>{cuadros}</div>" if cuadros else "")
+            + (("<h2>¿Cambiamos algo?</h2><div class='caja'><textarea id='cambio' maxlength='500' placeholder='Escribe aquí qué quieres cambiar (texto, foto, color…)'></textarea>"
+                f"<p><button class='btn' id='pedir'>Pedir cambio</button> {mas}<span id='pedmsg' class='mut'></span></p>"
+                "<p class='mut'>Si todo te gusta, respóndenos «aprobado» por WhatsApp.</p></div>") if reg.get("interno") else
+               "<h2>¿Cambiamos algo?</h2><p class='caja'>Dinos por WhatsApp qué quieres cambiar o si quieres más ángulos. Si todo te gusta, respóndenos «aprobado».</p>")
+            + (f"<ul class='lin'>{peds}</ul>" if peds else "") + "</section>")
+
+
+JS_EN = """<script>
+(()=>{const base=location.pathname.replace(/\\/$/,''),q=i=>document.getElementById(i);
+async function pedir(tipo){const m=q('pedmsg'),t=(q('cambio')||{}).value||'';m.textContent='Enviando…';
+ try{const r=await fetch(base+'/pedir',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({tipo:tipo,texto:t})});
+  const d=await r.json();if(!r.ok){m.textContent=d.detail||'No se pudo';return}
+  m.textContent=d.msg;if(tipo==='angulos'){setTimeout(()=>location.reload(),2500)}else{q('cambio').value=''}}catch(e){m.textContent='Sin conexión; intenta otra vez'}}
+document.addEventListener('click',ev=>{if(ev.target.id==='pedir')pedir('cambio');if(ev.target.id==='masang')pedir('angulos')});
+setInterval(async()=>{const s=q('entrega');if(!s||s.dataset.vivo!=='1')return;
+ try{const r=await fetch(base+'/entrega',{cache:'no-store'});if(!r.ok)return;const t=await r.text();
+  if(t.includes("data-vivo='0'")){location.reload();return}
+  const escrito=(q('cambio')||{}).value||'';s.outerHTML=t;if(q('cambio'))q('cambio').value=escrito}catch(e){}},5000);})();
+</script>"""
+
+
 def _pagina(tok, reg, c):
+    """Orden (14 nov, orden de Carlos): 1) sus mejores anuncios, 2) la entrega en curso, 3) el aviso del detalle que falta y el
+    cuadro para pedir, 4) el apoyo, 5) lo demás. La sección de agentes se carga aparte para que lo primero salga rápido."""
     e = html.escape
     ps = _piezas(c, reg.get("extras"))
-    listas = [p for p in ps if p["nota"] is not None and p["nota"] >= 8]
-    resto = [p for p in ps if p not in listas]
-    bloques = []
-    for titulo, grupo in (("Imágenes listas para tu campaña (8 o más)", [p for p in listas if p["es_imagen"]]),
-                          ("Videos listos para tu campaña (8 o más)", [p for p in listas if not p["es_imagen"]]),
-                          ("Videos en ajuste para llegar a 8", [p for p in resto if not p["es_imagen"]]),
-                          ("Imágenes en ajuste", [p for p in resto if p["es_imagen"]])):
-        if grupo:
-            bloques.append(f"<h2>{titulo}</h2><div class='g'>" + "".join(_fig(tok, p) for p in grupo) + "</div>")
+    # lo de la campaña vigente (Buen Fin) sale primero; dentro de cada bloque, por nota
+    orden = lambda g: sorted(g, key=lambda p: (0 if "buen fin" in str(p.get("titulo") or "").lower() else 1, -(p["nota"] or 0)))
+    listas = orden([p for p in ps if p["nota"] is not None and p["nota"] >= 8])
+    resto = orden([p for p in ps if p not in listas])
+
+    def grupo(titulo, g):
+        return f"<h2>{titulo}</h2><div class='g'>" + "".join(_fig(tok, p) for p in g) + "</div>" if g else ""
+    arriba = (grupo("Tus anuncios listos (8 o más)", [p for p in listas if p["es_imagen"]])
+              + grupo("Tus videos listos (8 o más)", [p for p in listas if not p["es_imagen"]]))
+    abajo = (grupo("Videos en ajuste para llegar a 8", [p for p in resto if not p["es_imagen"]])
+             + grupo("Imágenes en ajuste", [p for p in resto if p["es_imagen"]]))
     nota = f"<p class='caja'>{e(reg.get('mensaje'))}</p>" if reg.get("mensaje") else ""
+    agentes = ("<section id='agentes' data-pendiente='1'><h2>Tu equipo trabajando</h2><p class='mut'>Cargando…</p></section>" + JS_AG) if reg.get("agentes") else ""
     return f"""<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex,nofollow"><title>{e(c.get('cliente'))} · Visión Agencia</title><style>{CSS}{CSS_AG}</style></head><body><main>
+<meta name="robots" content="noindex,nofollow"><title>{e(c.get('cliente'))} · Visión Agencia</title><style>{CSS}{CSS_AG}{CSS_EN}</style></head><body><main>
 <h1>{e(c.get('cliente'))} · tus anuncios</h1>
-<p class="mut">Visión Agencia · {len(ps)} piezas. La calificación es de 0 a 10; solo publicamos lo que llega a 8 o más, porque es lo que trae mensajes y no solo vistas.</p>
-{nota}{_agentes(tok, reg, ps)}{JS_AG if reg.get("agentes") else ""}{_sistema(reg["slug"], ps)}{''.join(bloques) or "<p>Todavía no hay piezas para mostrar.</p>"}{_estrategia(reg)}{_generador(reg)}
+<p class="mut">Visión Agencia · {len(listas)} de {len(ps)} piezas ya están en 8 o más, que es lo que trae mensajes y no solo vistas.</p>
+{arriba or "<p>Todavía no hay piezas en 8 o más; abajo va el avance.</p>"}
+{_entrega(tok, reg)}{JS_EN if reg.get('entrega') else ''}
+{_pedir_anuncio(reg, False, tok, c)}{JS_AN if reg.get('pedir_anuncio') else ''}
+{_apoyo(reg)}
+{nota}{agentes}{_sistema(reg["slug"], ps)}{abajo}{_estrategia(reg)}{_generador(reg)}
 <p class="mut">Dinos por WhatsApp cuáles apruebas o qué cambio quieres.</p></main></body></html>"""
 
 
@@ -414,7 +591,7 @@ med = modal.Volume.from_name("enlaces-medios", create_if_missing=True)
 @app.function(image=IMG, volumes={"/ws": ws, "/med": med}, timeout=300, max_containers=2, scaledown_window=120)
 @modal.asgi_app()
 def web():
-    from fastapi import FastAPI, HTTPException
+    from fastapi import Body, FastAPI, HTTPException
     from fastapi.responses import FileResponse, HTMLResponse
 
     api = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -445,6 +622,75 @@ def web():
         enlaces[tok] = {**reg, "gen": {"estado": "corriendo", "t": time.time(), "fecha": hoy, "n_hoy": n + 1, "msg": "Armando los anuncios…"}}
         producir.spawn(tok)
         return {"estado": "corriendo"}
+
+    @api.post("/{tok}/anuncio")
+    def anuncio(tok: str, d: dict = Body(...)):
+        reg = _reg(tok)
+        if not reg.get("pedir_anuncio"):
+            raise HTTPException(404, "No disponible.")
+        texto = re.sub(r"\s+", " ", str(d.get("texto") or "")).strip()[:400]
+        if len(texto) < 6:
+            raise HTTPException(400, "Escribe qué quieres anunciar.")
+        hoy = datetime.now(SONORA).strftime("%d/%m/%Y")
+        peds = reg.get("anuncios_pedidos") or []
+        if sum(1 for x in peds if str(x.get("cuando", "")).startswith(hoy)) >= MAX_ANUNCIOS_DIA:
+            raise HTTPException(429, "Ya pediste varios hoy; si necesitas más, escríbenos por WhatsApp.")
+        prompt = _prompt_anuncio(reg, texto)
+        cuando = datetime.now(SONORA).strftime("%d/%m/%Y %H:%M")
+        enlaces[tok] = {**reg, "anuncios_pedidos": (peds + [{"cuando": cuando, "texto": texto, "prompt": prompt}])[-20:]}
+        try:
+            db = modal.Dict.from_name("vision-os-db")
+            bit = (db.get(f"bitacora:{tok}") or [])[-40:]
+            bit.append({"cuando": cuando, "evento": f"Pediste un anuncio: «{texto[:160]}». Te dimos al instante el prompt para ChatGPT."})
+            db[f"bitacora:{tok}"] = bit
+        except Exception:
+            pass
+        try:
+            modal.Function.from_name("entrega-rapida", "pedido").spawn(tok, "anuncio", texto)
+        except Exception:
+            pass
+        return {"ok": True, "prompt": prompt, "imagenes": bool(reg.get("entrega_cfg"))}
+
+    @api.get("/{tok}/entrega", response_class=HTMLResponse)
+    def entrega(tok: str):
+        return HTMLResponse(_entrega(tok, _reg(tok)), headers={"Cache-Control": "no-store"})
+
+    @api.post("/{tok}/pedir")
+    def pedir(tok: str, d: dict = Body(...)):
+        reg = _reg(tok)
+        en = reg.get("entrega")
+        if not en:
+            raise HTTPException(404, "No disponible.")
+        tipo, texto = str(d.get("tipo") or ""), re.sub(r"\s+", " ", str(d.get("texto") or "")).strip()[:500]
+        if tipo not in ("cambio", "angulos"):
+            raise HTTPException(400, "Petición inválida.")
+        if tipo == "cambio" and len(texto) < 4:
+            raise HTTPException(400, "Escribe qué quieres cambiar.")
+        hoy = datetime.now(SONORA).strftime("%d/%m/%Y")
+        de_hoy = [x for x in en.get("pedidos") or [] if str(x.get("cuando", "")).startswith(hoy)]
+        if len(de_hoy) >= MAX_PEDIDOS_DIA:
+            raise HTTPException(429, "Ya recibimos varias peticiones hoy; el equipo te contacta por WhatsApp.")
+        if tipo == "angulos":
+            if (en.get("estado") == "corriendo" and time.time() - en.get("t", 0) < 900) or time.time() - en.get("pidiendo", 0) < 120:
+                raise HTTPException(409, "Ya estamos armando una entrega; espera a que termine.")
+            if not en.get("quedan_angulos"):
+                raise HTTPException(409, "Ya te mostramos todos los ángulos listos; el equipo prepara nuevos.")
+            if sum(1 for x in de_hoy if x.get("tipo") == "angulos") >= MAX_ANGULOS_DIA:
+                raise HTTPException(429, "Hoy ya pediste más ángulos dos veces; mañana seguimos.")
+        cuando = datetime.now(SONORA).strftime("%d/%m/%Y %H:%M")
+        ped = {"cuando": cuando, "tipo": tipo, "texto": "" if tipo == "angulos" else texto}
+        marca = {"pidiendo": time.time()} if tipo == "angulos" else {}  # cierra la puerta mientras arranca la tanda (doble clic)
+        enlaces[tok] = {**reg, "entrega": {**en, **marca, "pedidos": ((en.get("pedidos") or []) + [ped])[-20:]}}
+        try:
+            db = modal.Dict.from_name("vision-os-db")
+            bit = (db.get(f"bitacora:{tok}") or [])[-40:]
+            bit.append({"cuando": cuando, "evento": "Pediste más ángulos: ya se están armando." if tipo == "angulos"
+                        else f"Pediste un cambio: «{texto[:200]}». Lo recibió el equipo."})
+            db[f"bitacora:{tok}"] = bit
+        except Exception:
+            pass
+        modal.Function.from_name("entrega-rapida", "pedido").spawn(tok, tipo, texto)
+        return {"ok": True, "msg": "Armando más ángulos…" if tipo == "angulos" else "Recibido. El equipo ya tiene tu cambio."}
 
     @api.get("/{tok}/agentes", response_class=HTMLResponse)
     def agentes(tok: str):
@@ -481,6 +727,9 @@ def web():
                 return FileResponse(f"{TAB}/v/{nombre}", media_type="video/mp4", headers={"X-Robots-Tag": "noindex"})
             if nombre == p["foto"]:
                 return FileResponse(p.get("ruta") or f"{TAB}/p/{nombre}", headers={"X-Robots-Tag": "noindex"})
+        for q in (reg.get("entrega") or {}).get("cuadros") or []:  # cuadros de video de la entrega rápida
+            if nombre == q.get("archivo") and str(q.get("ruta", "")).startswith("/med/"):
+                return FileResponse(q["ruta"], headers={"X-Robots-Tag": "noindex"})
         raise HTTPException(404, "No encontrado.")
 
     return api
